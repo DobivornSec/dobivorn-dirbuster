@@ -34,14 +34,14 @@ Web uygulamaları için hızlı bir dizin/dosya tarayıcı. Gizli yönetici pane
 
 ## Örnek Çıktı
 
-[✓] https://github.com/login -> 200
-[→] https://github.com/admin -> 301
-[!] https://github.com/wp-admin -> 403
+    [✓] https://github.com/login -> 200
+    [→] https://github.com/admin -> 301
+    [!] https://github.com/wp-admin -> 403
 
-Bulunan dizin/dosyalar:
-  → 200 : https://github.com/login
-  → 301 : https://github.com/admin
-  → 403 : https://github.com/wp-admin
+    Bulunan dizin/dosyalar:
+    → 200 : https://github.com/login
+    → 301 : https://github.com/admin
+    → 403 : https://github.com/wp-admin
 
 ## Parametreler
 Parametre	Açıklama	Varsayılan

@@ -17,20 +17,20 @@ Web uygulamaları için hızlı bir dizin/dosya tarayıcı. Gizli yönetici pane
 
 ## Kurulum
 
-git clone https://github.com/DobivornSec/dobivorn-dirbuster.git
-cd dobivorn-dirbuster
-pip install -r requirements.txt
+    git clone https://github.com/DobivornSec/dobivorn-dirbuster.git
+    cd dobivorn-dirbuster
+    pip install -r requirements.txt
 
 ## Kullanım 
 
 # Varsayılan wordlist ile tarama
-python3 dirbuster.py https://example.com
+    python3 dirbuster.py https://example.com
 
 # Özel wordlist ve thread sayısı
-python3 dirbuster.py https://example.com -w custom.txt -t 20
+    python3 dirbuster.py https://example.com -w custom.txt -t 20
 
 # Zaman aşımını artır
-python3 dirbuster.py https://example.com -to 10
+    python3 dirbuster.py https://example.com -to 10
 
 ## Örnek Çıktı
 
@@ -52,10 +52,10 @@ url	Hedef URL	Zorunlu
 
 ## Yapılacaklar
 
-    Recursive tarama (iç içe dizinler)
+  Recursive tarama (iç içe dizinler)
 
-    Dosya uzantısı filtreleme
+  Dosya uzantısı filtreleme
 
-    Çıktıyı dosyaya kaydetme
+  Çıktıyı dosyaya kaydetme
 
-    Proxy desteği
+  Proxy desteği

@@ -145,5 +145,3 @@ python3 dirbuster.py https://example.com --no-hash
 
 Beğendiysen GitHub'da ⭐ bırakmayı unutma!
 ```
-
-**Bu kadar!** 

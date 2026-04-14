@@ -1,146 +1,99 @@
-# 🐉 Dobivorn Directory Buster v3.0
+# Dobivorn Directory Buster v5.0
 
-> **3 Başlı Ejderha** | Red Team | Purple Team | Blue Team
+Yetkili guvenlik testleri icin asenkron, hizli ve rapor-odakli dizin/dosya tarayici.
 
-Web uygulamaları için **profesyonel** dizin/dosya tarayıcı. Gizli yolları, admin panellerini, yedek dosyalarını ve hassas dizinleri bulur.
+## v5.0 ile gelenler
 
----
+- Iki dahili wordlist profili:
+  - `quick`: hizli, yuksek sinyalli tarama
+  - `full`: genis kapsamli tarama
+- Varsayilan tarama profili artik `quick`
+- `--profile` ve `-w/--wordlist` birlikte daha esnek kullanim
+- Arac cikisinda aktif wordlist bilgisi gosterimi
 
-## ✨ Özellikler
-
-| Özellik | Açıklama |
-|---------|----------|
-| 🔍 **Wordlist tabanlı** | 50+ yaygın yol ile hızlı tarama |
-| ⚡ **Asenkron mimari** | 800+ request/saniye hız |
-| 🎨 **Renkli çıktı** | Durum kodlarına göre renklendirme |
-| 🔥 **404 Bulanıklaştırma** | Hash karşılaştırma ile false positive temizliği |
-| 🕵️ **Teknoloji tespiti** | WordPress, Laravel, Django, React, Angular |
-| 💀 **Git sızıntısı** | `.git/HEAD`, `.git/config` tespiti |
-| 📁 **Recursive tarama** | Bulunan dizinlerin içini de tara |
-| 🔌 **Çoklu uzantı** | `.php .bak .sql .tar.gz .zip` desteği |
-| 📊 **Raporlama** | JSON, CSV, TXT formatlarında çıktı |
-| 🕵️ **Proxy/Tor** | Anonim tarama desteği |
-| 🍪 **Cookie/Header** | Auth gerektiren siteler için |
-
----
-
-## 📦 Kurulum
+## Kurulum
 
 ```bash
 git clone https://github.com/DobivornSec/dobivorn-dirbuster.git
 cd dobivorn-dirbuster
-pip install -r requirements.txt
+python3 -m pip install -r requirements.txt
 ```
 
----
+## Hizli kullanim
 
-## 🚀 Kullanım
-
-### Temel tarama
 ```bash
 python3 dirbuster.py https://example.com
 ```
 
-### Özel wordlist ve thread sayısı
+Bu komut varsayilan olarak `quick` profilini kullanir.
+
+## Wordlist profilleri
+
+- `wordlists/quick.txt` -> hizli pentest ilk gecis listesi
+- `wordlists/full.txt` -> daha derin ve kapsamli tarama listesi
+- `wordlists/common.txt` -> genis liste (geriye donuk uyumluluk)
+
+## Ornek komutlar
+
+### Hizli profil (onerilen ilk adim)
+
 ```bash
-python3 dirbuster.py https://example.com -w custom.txt -t 100
+python3 dirbuster.py https://example.com --profile quick
 ```
 
-### Çoklu uzantı ekleme
+### Genis profil
+
 ```bash
-python3 dirbuster.py https://example.com -e .php .bak .sql .tar.gz
+python3 dirbuster.py https://example.com --profile full -r --max-depth 2
 ```
 
-### Recursive tarama + JSON rapor
+### Ozel wordlist (profili override eder)
+
 ```bash
-python3 dirbuster.py https://example.com -r -o sonuc.json
+python3 dirbuster.py https://example.com -w my-custom-wordlist.txt
 ```
 
-### Status koduna göre filtreleme
+### Cikti raporu
+
 ```bash
-python3 dirbuster.py https://example.com --status 200 403
+python3 dirbuster.py https://example.com --profile full -o reports/scan.json
 ```
 
-### Proxy ile (Burp Suite)
-```bash
-python3 dirbuster.py https://example.com --proxy http://127.0.0.1:8080
-```
+## Parametreler
 
-### Tor ile anonim tarama
-```bash
-python3 dirbuster.py https://example.com --tor
-```
-
-### 404 bulanıklaştırmayı kapat
-```bash
-python3 dirbuster.py https://example.com --no-hash
-```
-
----
-
-## 🔧 Parametreler
-
-| Parametre | Açıklama | Varsayılan |
-|-----------|----------|------------|
+| Parametre | Aciklama | Varsayilan |
+|---|---|---|
 | `url` | Hedef URL | Zorunlu |
-| `-w, --wordlist` | Wordlist dosyası | `wordlists/common.txt` |
-| `-t, --threads` | Thread sayısı | 50 |
-| `-to, --timeout` | Zaman aşımı (saniye) | 5 |
-| `-d, --delay` | Request arası bekleme | 0 |
-| `-r, --recursive` | Recursive tarama | Kapalı |
-| `-e, --extensions` | Dosya uzantıları | Yok |
-| `-o, --output` | Çıktı dosyası (JSON/CSV/TXT) | Yok |
-| `--proxy` | Proxy adresi | Yok |
-| `--cookie` | Cookie (name=value) | Yok |
-| `--header` | Custom header | Yok |
-| `--status` | Filtrelenecek status kodları | 200,301,302,403 |
-| `--tor` | Tor ağı üzerinden tarama | Kapalı |
-| `--no-hash` | 404 bulanıklaştırmayı kapat | Kapalı |
+| `--profile` | Dahili wordlist profili (`quick`/`full`) | `quick` |
+| `-w, --wordlist` | Ozel wordlist dosyasi (profili override eder) | Yok |
+| `-t, --threads` | Eszamanli istek sayisi | `50` |
+| `-to, --timeout` | Timeout (saniye) | `8` |
+| `-d, --delay` | Istekler arasi bekleme | `0` |
+| `-r, --recursive` | Recursive tarama ac | Kapali |
+| `--max-depth` | Maksimum recursive derinlik | `1` |
+| `-e, --extensions` | Test edilecek uzantilar | `['', '.php', '.bak', '.old']` |
+| `--retries` | Timeout/connection retry sayisi | `1` |
+| `--method` | HTTP metodu (`GET`/`HEAD`) | `GET` |
+| `--status` | Kabul edilen status kodlari | `200 204 301 302 307 401 403` |
+| `-o, --output` | Cikti dosya yolu | Yok |
+| `--output-format` | Cikti tipi (`json`,`csv`,`txt`) | uzantidan otomatik |
+| `--proxy` | HTTP proxy | Yok |
+| `--tor` | Tor uzerinden tarama | Kapali |
+| `--cookie` | Cookie string | Yok |
+| `--header` | Ozel header listesi | Yok |
+| `--no-hash` | 404 fingerprint kapat | Kapali |
+| `-v, --verbose` | Ayrintili hata logu | Kapali |
 
----
+## Rapor formatlari
 
-## 📊 Örnek Çıktı
+- **JSON**: tum metadata + sonuc detaylari
+- **CSV**: `url,status,content_length,title,depth`
+- **TXT**: hizli okunabilir ozet
 
-```bash
-╔══════════════════════════════════════════════════════════════╗
-║   🐉 Dobivorn Directory Buster v3.0 - 3 Başlı Ejderha       ║
-║   🔴 Red Team | 🟣 Purple Team | 🔵 Blue Team                ║
-║   ✨ 404 Hash | Tech Detect | Git Leak                       ║
-╚══════════════════════════════════════════════════════════════╝
+## Etik kullanim
 
-[+] Hedef: https://google.com/
-[+] Kelime sayısı: 49
-[+] 404 Bulanıklaştırma: Aktif
+Bu arac yalnizca **izinli** ve **yetkili** guvenlik testleri icindir. Izinsiz tarama yasal sorumluluk dogurabilir.
 
-[+] 404 hash'i alındı: 14c6bdc8365440bc...
-[+] Tespit edilen teknolojiler: Nginx
+## Lisans
 
-[✓] https://google.com/robots.txt -> 200
-[✓] https://google.com/sitemap.xml -> 200
-[✓] https://google.com/images -> 200
-[✓] https://google.com/mail -> 200
-
-[!] https://tesla.com/admin -> 403 (Yasak)
-[!] https://tesla.com/.env -> 403 (Yasak)
-[🔥] GIT SIZINTISI: https://example.com/.git/HEAD
-
-╔══════════════════════════════════════════════════════════════╗
-║                    TARAMA ÖZETİ                             ║
-╚══════════════════════════════════════════════════════════════╝
-[+] Hedef: https://google.com/
-[+] Bulunan: 4
-[+] Teknolojiler: Nginx
-[+] Bitiş: 2026-04-14 11:35:26
-```
-
----
-
-## ⚠️ Uyarı
-
-> Bu araç **eğitim ve yetkili testler** için geliştirilmiştir. İzinsiz kullanım yasa dışıdır. Sorumluluk kullanıcıya aittir.
-
----
-
-## ⭐ Star Atmayı Unutma!
-
-Beğendiysen GitHub'da ⭐ bırakmayı unutma!
+MIT (`LICENSE`)

@@ -1,495 +1,595 @@
 #!/usr/bin/env python3
 """
-Dobivorn Directory Buster v3.0 🐉
-Gelişmiş Web Dizin/Dosya Tarayıcı
-Red Team | Purple Team | Blue Team
-
-Özellikler:
-- 404 bulanıklaştırma (hash karşılaştırma)
-- Teknoloji tespiti (WordPress, Laravel, Django, React, Angular)
-- Git sızıntısı tespiti
-- Asenkron mimari (800+ req/s)
-- JSON/CSV/TXT raporlama
-- Recursive tarama
-- Çoklu uzantı desteği
-- Proxy/Tor desteği
+Dobivorn Directory Buster v5.0
+High-performance web directory and file scanner for authorized assessments.
 """
 
-import asyncio
-import aiohttp
-import sys
 import argparse
-import json
+import asyncio
 import csv
-from urllib.parse import urljoin, urlparse
-from datetime import datetime
-from colorama import init, Fore, Style
-import random
-from tqdm import tqdm
 import hashlib
+import json
+import random
+import sys
+import time
+from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Dict, List, Optional, Set, Tuple
+from urllib.parse import urljoin, urlparse
 
-# Proxy desteği için 
+import aiohttp
+from colorama import Fore, Style, init
+from tqdm import tqdm
+
 try:
     from aiohttp_socks import ProxyConnector
     SOCKS_SUPPORT = True
 except ImportError:
-    SOCKS_SUPPORT = False
     ProxyConnector = None
+    SOCKS_SUPPORT = False
 
-# Renkleri başlat
-init(autoreset=True)
-
-# Banner
-BANNER = f"""
-{Fore.BLUE}╔══════════════════════════════════════════════════════════════╗
-║   🐉 Dobivorn Directory Buster v3.0 - 3 Başlı Ejderha       ║
-║   🔴 Red Team | 🟣 Purple Team | 🔵 Blue Team                ║
-║   ✨ 404 Hash | Tech Detect | Git Leak                       ║
-╚══════════════════════════════════════════════════════════════╝{Style.RESET_ALL}
-"""
-
-# User-Agent listesi (bloklanmayı önle)
+VERSION = "5.0"
+WORDLIST_PROFILES = {
+    "quick": "wordlists/quick.txt",
+    "full": "wordlists/full.txt",
+}
+DEFAULT_STATUS_FILTER = [200, 204, 301, 302, 307, 401, 403]
+DEFAULT_EXTENSIONS = ["", ".php", ".bak", ".old"]
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
-    "Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/537.36"
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/537.36",
 ]
 
-# Teknoloji tespiti için imzalar
-TECH_SIGNATURES = {
-    'WordPress': ['/wp-content/', '/wp-includes/', 'wp-json', 'wp-admin'],
-    'Laravel': ['laravel_session', '/vendor/', 'csrf-token'],
-    'Django': ['csrftoken', 'admin/login/', 'django'],
-    'React': ['_next/static', 'react', 'manifest.json'],
-    'Angular': ['_ng', 'ng-app', 'ng-version'],
-    'Joomla': ['/media/system/js/', '/administrator/'],
-    'Drupal': ['/sites/default/', 'drupal'],
-    'Magento': ['/skin/frontend/', 'Mage.Cookies'],
-    'ASP.NET': ['ASP.NET', 'ViewState', '__VIEWSTATE'],
-    'Node.js': ['x-powered-by: express', 'nodejs'],
-}
+init(autoreset=True)
+
+BANNER = f"""
+{Fore.CYAN}============================================================
+ Dobivorn Directory Buster v{VERSION}
+ Fast | Accurate | Report-Ready
+============================================================{Style.RESET_ALL}
+"""
+
+
+@dataclass
+class ScanResult:
+    url: str
+    status: int
+    content_length: int
+    title: str
+    depth: int
+
 
 class DobivornDirBuster:
-    def __init__(self, target, wordlist, threads=50, timeout=5, delay=0, 
-                 recursive=False, extensions=None, output=None, proxy=None,
-                 cookies=None, headers=None, status_filter=None, tor=False,
-                 no_hash=False):
-        
-        self.target = target.rstrip('/') + '/'
+    def __init__(
+        self,
+        target: str,
+        wordlist: List[str],
+        threads: int = 50,
+        timeout: int = 8,
+        delay: float = 0,
+        recursive: bool = False,
+        max_depth: int = 1,
+        extensions: Optional[List[str]] = None,
+        output: Optional[str] = None,
+        output_format: Optional[str] = None,
+        proxy: Optional[str] = None,
+        cookies: Optional[Dict[str, str]] = None,
+        headers: Optional[Dict[str, str]] = None,
+        status_filter: Optional[List[int]] = None,
+        retries: int = 1,
+        method: str = "GET",
+        no_hash: bool = False,
+        verbose: bool = False,
+    ):
+        self.target = target.rstrip("/") + "/"
         self.wordlist = wordlist
-        self.threads = threads
+        self.threads = max(1, threads)
         self.timeout = timeout
-        self.delay = delay
+        self.delay = max(0, delay)
         self.recursive = recursive
-        self.extensions = extensions or []
+        self.max_depth = max(0, max_depth)
+        self.extensions = self._normalize_extensions(extensions or DEFAULT_EXTENSIONS)
         self.output = output
+        self.output_format = output_format
         self.proxy = proxy
         self.cookies = cookies or {}
         self.custom_headers = headers or {}
-        self.status_filter = status_filter or [200, 301, 302, 403]
-        self.tor = tor
-        self.no_hash = no_hash  # 404 hash karşılaştırmasını kapat
-        
-        self.found = []
-        self.semaphore = asyncio.Semaphore(threads)
-        self.session = None
-        self.not_found_hash = None
-        self.technologies = []
-        self.git_leaks = []
-        
-    async def get_session(self):
-        """HTTP session oluştur"""
-        connector = None
-        
-        if self.proxy:
-            if self.proxy.startswith('socks'):
-                if SOCKS_SUPPORT:
-                    connector = ProxyConnector.from_url(self.proxy)
-                else:
-                    print(f"{Fore.YELLOW}[!] SOCKS desteği için 'aiohttp-socks' gerekli. Proxy kullanılmıyor.{Style.RESET_ALL}")
+        self.status_filter = sorted(set(status_filter or DEFAULT_STATUS_FILTER))
+        self.retries = max(0, retries)
+        self.method = method.upper()
+        self.no_hash = no_hash
+        self.verbose = verbose
+
+        self.semaphore = asyncio.Semaphore(self.threads)
+        self.session: Optional[aiohttp.ClientSession] = None
+
+        self.found: List[ScanResult] = []
+        self.technologies: List[str] = []
+        self.git_leaks: List[Dict[str, str]] = []
+        self.visited_dirs: Set[str] = set()
+        self.seen_urls: Set[str] = set()
+
+        self.not_found_fingerprints: Set[Tuple[int, str]] = set()
+        self.start_ts = time.perf_counter()
+
+    @staticmethod
+    def _normalize_extensions(extensions: List[str]) -> List[str]:
+        normalized = []
+        for ext in extensions:
+            if not ext:
+                normalized.append("")
+                continue
+            ext = ext.strip()
+            if not ext:
+                continue
+            normalized.append(ext if ext.startswith(".") else f".{ext}")
+        return sorted(set(normalized), key=lambda value: (value != "", value))
+
+    async def get_session(self) -> aiohttp.ClientSession:
+        connector = aiohttp.TCPConnector(limit=self.threads, ssl=False)
+        if self.proxy and self.proxy.startswith("socks"):
+            if SOCKS_SUPPORT:
+                connector = ProxyConnector.from_url(self.proxy)
             else:
-                connector = aiohttp.TCPConnector()
-        
+                self._warn("SOCKS proxy istendi ancak aiohttp-socks yüklü değil. Proxy atlanıyor.")
+
         headers = {
-            'User-Agent': random.choice(USER_AGENTS),
-            'Accept': '*/*',
-            'Accept-Language': 'en-US,en;q=0.5',
-            'Accept-Encoding': 'gzip, deflate',
-            'Connection': 'keep-alive',
-            **self.custom_headers
+            "User-Agent": random.choice(USER_AGENTS),
+            "Accept": "*/*",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Connection": "keep-alive",
+            **self.custom_headers,
         }
-        
+
         timeout_obj = aiohttp.ClientTimeout(total=self.timeout)
-        
         return aiohttp.ClientSession(
             headers=headers,
             cookies=self.cookies,
             timeout=timeout_obj,
-            connector=connector
+            connector=connector,
         )
-    
-    async def get_page_hash(self, url):
-        """Sayfanın hash'ini al (404 tespiti için)"""
-        try:
-            async with self.session.get(url, ssl=False) as response:
-                content = await response.text()
-                # İlk 1000 karakterin MD5 hash'i
-                return hashlib.md5(content[:1000].encode()).hexdigest()
-        except:
+
+    async def request(self, url: str, method: Optional[str] = None) -> Optional[Tuple[int, str, Dict[str, str]]]:
+        if not self.session:
             return None
-    
-    async def get_base_hash(self):
-        """Temel 404 hash'ini al"""
-        random_path = f"/non-existent-path-{random.randint(10000, 99999)}"
-        test_url = urljoin(self.target, random_path)
-        self.not_found_hash = await self.get_page_hash(test_url)
-        if self.not_found_hash:
-            print(f"{Fore.GREEN}[+] 404 hash'i alındı: {self.not_found_hash[:16]}...{Style.RESET_ALL}")
-        else:
-            print(f"{Fore.YELLOW}[!] 404 hash'i alınamadı, bulanıklaştırma kapalı{Style.RESET_ALL}")
-    
-    async def detect_technology(self):
-        """Hedef sitenin teknolojisini tespit et"""
-        detected = set()
-        
-        for tech, indicators in TECH_SIGNATURES.items():
-            for indicator in indicators:
-                test_url = urljoin(self.target, indicator)
-                try:
-                    async with self.session.get(test_url, ssl=False) as response:
-                        if response.status == 200:
-                            detected.add(tech)
-                            break
-                except:
-                    pass
-        
-        # Header'lardan tespit
-        try:
-            async with self.session.get(self.target, ssl=False) as response:
-                headers = response.headers
-                server = headers.get('Server', '').lower()
-                if 'nginx' in server:
-                    detected.add('Nginx')
-                elif 'apache' in server:
-                    detected.add('Apache')
-                if 'x-powered-by' in headers:
-                    detected.add(f"Powered-By: {headers['X-Powered-By']}")
-        except:
-            pass
-        
-        return list(detected)
-    
-    async def check_git_leak(self):
-        """Git repository sızıntısını tespit et"""
-        git_paths = [
-            '.git/HEAD',
-            '.git/config',
-            '.git/index',
-            '.git/logs/HEAD',
-            '.git/refs/heads/master',
-            '.git/objects/',
-            '.gitignore'
-        ]
-        
-        leaks = []
-        for path in git_paths:
-            test_url = urljoin(self.target, path)
+
+        req_method = (method or self.method).upper()
+
+        for attempt in range(self.retries + 1):
             try:
-                async with self.session.get(test_url, ssl=False) as response:
-                    if response.status == 200:
-                        content = await response.text()
-                        if 'ref:' in content or 'repositoryformatversion' in content or 'git' in content.lower():
-                            leaks.append({
-                                'url': test_url,
-                                'type': 'Git Leak',
-                                'severity': 'HIGH'
-                            })
-                            print(f"{Fore.RED}[🔥] GIT SIZINTISI: {test_url}{Style.RESET_ALL}")
-            except:
-                pass
-        
+                async with self.session.request(req_method, url, proxy=self.proxy if self.proxy and not self.proxy.startswith("socks") else None) as response:
+                    text = await response.text(errors="ignore")
+                    return response.status, text, dict(response.headers)
+            except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+                if self.verbose:
+                    self._warn(f"Istek hatasi ({attempt + 1}/{self.retries + 1}) {url}: {exc}")
+                if attempt < self.retries:
+                    await asyncio.sleep(min(0.75 * (attempt + 1), 2.0))
+                    continue
+                return None
+
+        return None
+
+    def _content_hash(self, text: str) -> str:
+        return hashlib.md5(text[:1500].encode("utf-8", errors="ignore")).hexdigest()
+
+    async def build_404_fingerprint(self) -> None:
+        fingerprints: Set[Tuple[int, str]] = set()
+        for _ in range(2):
+            random_path = f"non-existent-{random.randint(10000, 99999)}"
+            test_url = urljoin(self.target, random_path)
+            payload = await self.request(test_url)
+            if payload:
+                status, body, _ = payload
+                fingerprints.add((status, self._content_hash(body)))
+
+        self.not_found_fingerprints = fingerprints
+        if fingerprints:
+            self._ok(f"404 fingerprint hazirlandi ({len(fingerprints)} imza)")
+        else:
+            self._warn("404 fingerprint alinamadi, false-positive filtre zayif kalabilir")
+
+    async def detect_technology(self) -> List[str]:
+        payload = await self.request(self.target)
+        if not payload:
+            return []
+
+        status, body, headers = payload
+        if status >= 500:
+            return []
+
+        body_l = body.lower()
+        headers_l = {key.lower(): value.lower() for key, value in headers.items()}
+        detected: Set[str] = set()
+
+        signatures = {
+            "WordPress": ["wp-content", "wp-json", "wp-includes"],
+            "Laravel": ["laravel", "csrf-token", "x-laravel"],
+            "Django": ["csrftoken", "django"],
+            "React": ["react", "__next"],
+            "Angular": ["ng-version", "angular"],
+        }
+
+        for tech, marks in signatures.items():
+            if any(mark in body_l for mark in marks) or any(mark in str(headers_l) for mark in marks):
+                detected.add(tech)
+
+        server = headers_l.get("server", "")
+        if "nginx" in server:
+            detected.add("Nginx")
+        if "apache" in server:
+            detected.add("Apache")
+        if "cloudflare" in server:
+            detected.add("Cloudflare")
+
+        return sorted(detected)
+
+    async def check_git_leaks(self) -> List[Dict[str, str]]:
+        leak_candidates = [
+            ".git/HEAD",
+            ".git/config",
+            ".git/index",
+            ".git/logs/HEAD",
+            ".git/packed-refs",
+        ]
+        leaks = []
+
+        for path in leak_candidates:
+            url = urljoin(self.target, path)
+            payload = await self.request(url)
+            if not payload:
+                continue
+            status, body, _ = payload
+            if status == 200 and ("ref:" in body or "repositoryformatversion" in body or "[core]" in body):
+                leak = {"url": url, "type": "Git Leak", "severity": "HIGH"}
+                leaks.append(leak)
+                self._danger(f"Git sizintisi olasi: {url}")
+
         return leaks
-    
-    async def test_path(self, path, pbar):
-        """Tek bir yolu test et (hash karşılaştırmalı)"""
+
+    def is_false_positive(self, status: int, body: str) -> bool:
+        if self.no_hash or not self.not_found_fingerprints:
+            return False
+        return (status, self._content_hash(body)) in self.not_found_fingerprints
+
+    def extract_title(self, html: str) -> str:
+        if "<title" not in html.lower():
+            return ""
+        try:
+            lower_html = html.lower()
+            start = lower_html.index("<title")
+            gt = lower_html.index(">", start) + 1
+            end = lower_html.index("</title>", gt)
+            return html[gt:end].strip().replace("\n", " ")[:80]
+        except ValueError:
+            return ""
+
+    async def test_candidate(self, base_url: str, candidate: str, depth: int, pbar: Optional[tqdm]) -> None:
         async with self.semaphore:
             if self.delay > 0:
                 await asyncio.sleep(self.delay)
-            
-            # Dosya uzantılarını ekle
-            paths_to_test = [path]
+
             for ext in self.extensions:
-                paths_to_test.append(path + ext)
-            
-            for test_path in paths_to_test:
-                test_url = urljoin(self.target, test_path)
-                
-                try:
-                    async with self.session.get(test_url, ssl=False) as response:
-                        status = response.status
-                        
-                        # 404 bulanıklaştırma
-                        is_false_positive = False
-                        if not self.no_hash and self.not_found_hash and status == 200:
-                            page_hash = await self.get_page_hash(test_url)
-                            if page_hash == self.not_found_hash:
-                                is_false_positive = True
-                        
-                        if not is_false_positive and status in self.status_filter:
-                            result = {
-                                'url': test_url,
-                                'status': status,
-                                'content_length': len(await response.text()),
-                                'title': await self.get_title(response)
-                            }
-                            
-                            self.found.append(result)
-                            
-                            # Renkli çıktı
-                            if status == 200:
-                                print(f"{Fore.GREEN}[✓] {test_url} -> {status}{Style.RESET_ALL}")
-                            elif status in [301, 302]:
-                                location = response.headers.get('Location', '?')
-                                print(f"{Fore.BLUE}[→] {test_url} -> {status} (-> {location}){Style.RESET_ALL}")
-                            elif status == 403:
-                                print(f"{Fore.MAGENTA}[!] {test_url} -> {status} (Yasak){Style.RESET_ALL}")
-                            elif status == 401:
-                                print(f"{Fore.YELLOW}[$] {test_url} -> {status} (Yetki gerekli){Style.RESET_ALL}")
-                            else:
-                                print(f"{Fore.CYAN}[?] {test_url} -> {status}{Style.RESET_ALL}")
-                            
-                            # Recursive tarama
-                            if self.recursive and status == 200 and not test_path.endswith(('.php', '.html', '.txt', '.zip', '.gz', '.sql')):
-                                await self.recursive_scan(test_url)
-                            
-                except asyncio.TimeoutError:
-                    pass
-                except Exception:
-                    pass
-                
-                pbar.update(1)
-    
-    async def get_title(self, response):
-        """Sayfa başlığını al"""
-        try:
-            text = await response.text()
-            if '<title>' in text:
-                title = text.split('<title>')[1].split('</title>')[0]
-                return title[:50]
-        except:
-            pass
-        return ""
-    
-    async def recursive_scan(self, url):
-        """Recursive tarama (bulunan dizinlerin içini tara)"""
-        parsed = urlparse(url)
-        new_base = url if url.endswith('/') else url + '/'
-        
-        # Sadece alt dizinleri tara (sonsuz döngüyü önle)
-        if new_base.count('/') - self.target.count('/') <= 3:
-            print(f"{Fore.CYAN}[↻] Recursive taranıyor: {new_base}{Style.RESET_ALL}")
-            # Basit recursion - kelimelerin başına yeni dizini ekle
-            new_wordlist = [f"{parsed.path.lstrip('/')}{word}" for word in self.wordlist[:20]]  # Limit 20
-            for path in new_wordlist:
-                await self.test_path(path, None)  # Progress bar olmadan
-    
-    async def scan(self):
-        """Ana tarama fonksiyonu"""
-        print(BANNER)
-        print(f"{Fore.YELLOW}[+] Hedef: {self.target}{Style.RESET_ALL}")
-        print(f"{Fore.YELLOW}[+] Kelime sayısı: {len(self.wordlist)}{Style.RESET_ALL}")
-        print(f"{Fore.YELLOW}[+] Thread: {self.threads}{Style.RESET_ALL}")
-        print(f"{Fore.YELLOW}[+] Timeout: {self.timeout}s{Style.RESET_ALL}")
-        if self.extensions:
-            print(f"{Fore.YELLOW}[+] Uzantılar: {', '.join(self.extensions)}{Style.RESET_ALL}")
-        if self.recursive:
-            print(f"{Fore.YELLOW}[+] Recursive tarama: Aktif{Style.RESET_ALL}")
-        if not self.no_hash:
-            print(f"{Fore.YELLOW}[+] 404 Bulanıklaştırma: Aktif{Style.RESET_ALL}")
-        print(f"{Fore.YELLOW}[+] Başlangıç: {datetime.now()}{Style.RESET_ALL}\n")
-        
-        self.session = await self.get_session()
-        
-        # 404 hash'ini al
-        if not self.no_hash:
-            await self.get_base_hash()
-        
-        # Teknoloji tespiti
-        self.technologies = await self.detect_technology()
-        if self.technologies:
-            print(f"{Fore.GREEN}[+] Tespit edilen teknolojiler: {', '.join(self.technologies)}{Style.RESET_ALL}")
-        
-        # Git sızıntısı kontrolü
-        self.git_leaks = await self.check_git_leak()
-        if self.git_leaks:
-            print(f"{Fore.RED}[!] {len(self.git_leaks)} Git sızıntısı bulundu!{Style.RESET_ALL}")
-        
-        print()  # Boş satır
-        
-        # Progress bar
-        total_requests = len(self.wordlist) * (1 + len(self.extensions))
-        pbar = tqdm(total=total_requests, desc="Tarama ilerlemesi", unit="req")
-        
-        # Asenkron görevleri başlat
-        tasks = []
-        for path in self.wordlist:
-            task = asyncio.create_task(self.test_path(path, pbar))
-            tasks.append(task)
-        
+                tested_path = f"{candidate}{ext}"
+                test_url = urljoin(base_url, tested_path)
+                if test_url in self.seen_urls:
+                    if pbar:
+                        pbar.update(1)
+                    continue
+                self.seen_urls.add(test_url)
+
+                payload = await self.request(test_url)
+                if payload:
+                    status, body, headers = payload
+                    if status in self.status_filter and not self.is_false_positive(status, body):
+                        result = ScanResult(
+                            url=test_url,
+                            status=status,
+                            content_length=len(body),
+                            title=self.extract_title(body),
+                            depth=depth,
+                        )
+                        self.found.append(result)
+                        self.print_result(result, headers)
+
+                        if self.recursive and depth < self.max_depth and status in (200, 301, 302, 307):
+                            await self.enqueue_recursive(result.url)
+
+                if pbar:
+                    pbar.update(1)
+
+    def print_result(self, result: ScanResult, headers: Dict[str, str]) -> None:
+        code = result.status
+        if code == 200:
+            self._ok(f"[{code}] {result.url}")
+        elif code in (301, 302, 307):
+            location = headers.get("Location", "?")
+            self._info(f"[{code}] {result.url} -> {location}")
+        elif code in (401, 403):
+            self._warn(f"[{code}] {result.url}")
+        else:
+            self._info(f"[{code}] {result.url}")
+
+    async def enqueue_recursive(self, discovered_url: str) -> None:
+        parsed = urlparse(discovered_url)
+        path = parsed.path
+        if not path.endswith("/"):
+            return
+
+        normalized = path.lstrip("/")
+        if not normalized or normalized in self.visited_dirs:
+            return
+        self.visited_dirs.add(normalized)
+
+    async def run_level(self, base_path_prefix: str, depth: int) -> None:
+        base_url = urljoin(self.target, base_path_prefix)
+        candidates = [f"{base_path_prefix}{word.lstrip('/')}" for word in self.wordlist]
+        total_requests = len(candidates) * len(self.extensions)
+        pbar = tqdm(total=total_requests, desc=f"Depth {depth}", unit="req")
+
+        tasks = [
+            asyncio.create_task(self.test_candidate(base_url=self.target, candidate=candidate, depth=depth, pbar=pbar))
+            for candidate in candidates
+        ]
         await asyncio.gather(*tasks)
         pbar.close()
-        
-        await self.session.close()
-        
-        # Rapor oluştur
+
+    async def scan(self) -> None:
+        self._info(BANNER.rstrip())
+        self._info(f"Target: {self.target}")
+        self._info(f"Wordlist entries: {len(self.wordlist)}")
+        self._info(f"Threads: {self.threads} | Retries: {self.retries} | Timeout: {self.timeout}s")
+        self._info(f"Status filter: {', '.join(map(str, self.status_filter))}")
+
+        self.session = await self.get_session()
+
+        try:
+            if not self.no_hash:
+                await self.build_404_fingerprint()
+
+            self.technologies = await self.detect_technology()
+            if self.technologies:
+                self._ok(f"Tespit edilen teknolojiler: {', '.join(self.technologies)}")
+
+            self.git_leaks = await self.check_git_leaks()
+
+            await self.run_level(base_path_prefix="", depth=0)
+
+            if self.recursive:
+                pending = sorted(self.visited_dirs)
+                next_depth = 1
+                while pending and next_depth <= self.max_depth:
+                    self._info(f"Recursive depth {next_depth}: {len(pending)} dizin")
+                    current = pending
+                    pending = []
+                    self.visited_dirs = set()
+                    for prefix in current:
+                        normalized_prefix = prefix if prefix.endswith("/") else f"{prefix}/"
+                        await self.run_level(base_path_prefix=normalized_prefix, depth=next_depth)
+                    pending = sorted(self.visited_dirs)
+                    next_depth += 1
+
+        finally:
+            if self.session:
+                await self.session.close()
+
         self.generate_report()
-    
-    def generate_report(self):
-        """Rapor oluştur (JSON, CSV, TXT)"""
-        print(f"\n{Fore.CYAN}╔══════════════════════════════════════════════════════════════╗")
-        print(f"║                    TARAMA ÖZETİ                                    ║")
-        print(f"╚══════════════════════════════════════════════════════════════════╝{Style.RESET_ALL}")
-        
-        print(f"{Fore.YELLOW}[+] Hedef: {self.target}{Style.RESET_ALL}")
-        print(f"{Fore.YELLOW}[+] Bulunan: {len(self.found)}{Style.RESET_ALL}")
-        if self.technologies:
-            print(f"{Fore.YELLOW}[+] Teknolojiler: {', '.join(self.technologies)}{Style.RESET_ALL}")
-        if self.git_leaks:
-            print(f"{Fore.RED}[+] Git sızıntıları: {len(self.git_leaks)}{Style.RESET_ALL}")
-        print(f"{Fore.YELLOW}[+] Bitiş: {datetime.now()}{Style.RESET_ALL}")
-        
-        if self.found:
-            print(f"\n{Fore.GREEN}Bulunan dizin/dosyalar:{Style.RESET_ALL}")
-            for result in self.found:
-                print(f"  → {result['status']} : {result['url']}")
-        
-        # Dosyaya kaydet
-        if self.output:
-            report_data = {
-                'target': self.target,
-                'scan_time': str(datetime.now()),
-                'total_found': len(self.found),
-                'technologies': self.technologies,
-                'git_leaks': self.git_leaks,
-                'results': self.found
-            }
-            
-            if self.output.endswith('.json'):
-                with open(self.output, 'w') as f:
-                    json.dump(report_data, f, indent=2)
-                print(f"\n{Fore.GREEN}[+] JSON raporu kaydedildi: {self.output}{Style.RESET_ALL}")
-            elif self.output.endswith('.csv'):
-                with open(self.output, 'w', newline='') as f:
-                    writer = csv.DictWriter(f, fieldnames=['url', 'status', 'content_length', 'title'])
-                    writer.writeheader()
-                    writer.writerows(self.found)
-                print(f"\n{Fore.GREEN}[+] CSV raporu kaydedildi: {self.output}{Style.RESET_ALL}")
-            else:
-                with open(self.output, 'w') as f:
-                    f.write(f"Target: {self.target}\n")
-                    f.write(f"Scan Time: {datetime.now()}\n")
-                    f.write(f"Technologies: {', '.join(self.technologies)}\n")
-                    f.write(f"Git Leaks: {len(self.git_leaks)}\n\n")
-                    for result in self.found:
-                        f.write(f"{result['status']} : {result['url']}\n")
-                print(f"\n{Fore.GREEN}[+] TXT raporu kaydedildi: {self.output}{Style.RESET_ALL}")
 
-def load_wordlist(file_path):
-    """Wordlist yükle"""
-    try:
-        with open(file_path, 'r', encoding='utf-8') as f:
-            words = [line.strip() for line in f if line.strip()]
-        return words
-    except FileNotFoundError:
-        print(f"{Fore.RED}[!] Wordlist bulunamadı: {file_path}{Style.RESET_ALL}")
-        sys.exit(1)
+    def generate_report(self) -> None:
+        end_ts = time.perf_counter()
+        elapsed = round(end_ts - self.start_ts, 2)
 
-def main():
+        self._info("=" * 60)
+        self._info("SCAN SUMMARY")
+        self._info(f"Target: {self.target}")
+        self._info(f"Findings: {len(self.found)} | Git leaks: {len(self.git_leaks)}")
+        self._info(f"Duration: {elapsed}s")
+        self._info("=" * 60)
+
+        data = {
+            "version": VERSION,
+            "target": self.target,
+            "scan_started_at": datetime.now(timezone.utc).isoformat(),
+            "duration_seconds": elapsed,
+            "threads": self.threads,
+            "timeout": self.timeout,
+            "retries": self.retries,
+            "recursive": self.recursive,
+            "max_depth": self.max_depth,
+            "status_filter": self.status_filter,
+            "technologies": self.technologies,
+            "git_leaks": self.git_leaks,
+            "results": [asdict(item) for item in self.found],
+        }
+
+        if not self.output:
+            return
+
+        output_path = Path(self.output)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        fmt = (self.output_format or output_path.suffix.lstrip(".") or "json").lower()
+        if fmt == "json":
+            output_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+        elif fmt == "csv":
+            with output_path.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(handle, fieldnames=["url", "status", "content_length", "title", "depth"])
+                writer.writeheader()
+                writer.writerows([asdict(item) for item in self.found])
+        else:
+            lines = [
+                f"Dobivorn DirBuster v{VERSION}",
+                f"Target: {self.target}",
+                f"Duration: {elapsed}s",
+                f"Findings: {len(self.found)}",
+                f"Technologies: {', '.join(self.technologies) if self.technologies else '-'}",
+                f"Git leaks: {len(self.git_leaks)}",
+                "",
+            ]
+            for item in self.found:
+                lines.append(f"[{item.status}] {item.url} (len={item.content_length}, depth={item.depth})")
+            output_path.write_text("\n".join(lines), encoding="utf-8")
+
+        self._ok(f"Rapor kaydedildi: {output_path}")
+
+    def _ok(self, msg: str) -> None:
+        print(f"{Fore.GREEN}[+] {msg}{Style.RESET_ALL}")
+
+    def _warn(self, msg: str) -> None:
+        print(f"{Fore.YELLOW}[!] {msg}{Style.RESET_ALL}")
+
+    def _danger(self, msg: str) -> None:
+        print(f"{Fore.RED}[-] {msg}{Style.RESET_ALL}")
+
+    def _info(self, msg: str) -> None:
+        print(f"{Fore.CYAN}[*] {msg}{Style.RESET_ALL}")
+
+
+def load_wordlist(file_path: str) -> List[str]:
+    path = Path(file_path)
+    if not path.exists():
+        raise FileNotFoundError(f"Wordlist bulunamadi: {file_path}")
+
+    words: List[str] = []
+    for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        words.append(stripped)
+
+    if not words:
+        raise ValueError("Wordlist bos olamaz")
+    return words
+
+
+def parse_cookie(cookie_str: Optional[str]) -> Dict[str, str]:
+    if not cookie_str:
+        return {}
+    chunks = [chunk.strip() for chunk in cookie_str.split(";") if chunk.strip()]
+    cookies: Dict[str, str] = {}
+    for chunk in chunks:
+        if "=" not in chunk:
+            continue
+        key, value = chunk.split("=", 1)
+        cookies[key.strip()] = value.strip()
+    return cookies
+
+
+def parse_headers(header_list: Optional[List[str]]) -> Dict[str, str]:
+    headers: Dict[str, str] = {}
+    if not header_list:
+        return headers
+
+    for raw in header_list:
+        if ":" not in raw:
+            continue
+        key, value = raw.split(":", 1)
+        headers[key.strip()] = value.strip()
+    return headers
+
+
+def validate_target(url: str) -> str:
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("URL gecersiz. Ornek: https://example.com")
+    return url
+
+
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Dobivorn Directory Buster v3.0 - Web Dizin Tarayıcı",
+        description=f"Dobivorn Directory Buster v{VERSION}",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-Örnekler:
+Examples:
   python3 dirbuster.py https://example.com
-  python3 dirbuster.py https://example.com -w custom.txt -t 30
-  python3 dirbuster.py https://example.com -e .php .bak .sql
-  python3 dirbuster.py https://example.com -r -o result.json
-  python3 dirbuster.py https://example.com --proxy http://127.0.0.1:8080
-  python3 dirbuster.py https://example.com --no-hash  (404 bulanıklaştırmayı kapat)
-        """
+  python3 dirbuster.py https://example.com --profile quick -t 100 --retries 2
+  python3 dirbuster.py https://example.com --profile full -r --max-depth 2
+  python3 dirbuster.py https://example.com -w mylist.txt
+  python3 dirbuster.py https://example.com -e .php .bak .sql -o reports/scan.json
+  python3 dirbuster.py https://example.com --status 200 401 403
+""",
     )
-    
-    parser.add_argument("url", help="Hedef URL (örn: https://example.com)")
-    parser.add_argument("-w", "--wordlist", default="wordlists/common.txt", help="Wordlist dosyası")
-    parser.add_argument("-t", "--threads", type=int, default=50, help="Thread sayısı (varsayılan: 50)")
-    parser.add_argument("-to", "--timeout", type=int, default=5, help="Zaman aşımı (varsayılan: 5)")
-    parser.add_argument("-d", "--delay", type=float, default=0, help="Request arası bekleme (saniye)")
-    parser.add_argument("-r", "--recursive", action="store_true", help="Recursive tarama")
-    parser.add_argument("-e", "--extensions", nargs="+", help="Dosya uzantıları (örn: .php .bak .sql)")
-    parser.add_argument("-o", "--output", help="Çıktı dosyası (JSON, CSV veya TXT)")
-    parser.add_argument("--proxy", help="Proxy (örn: http://127.0.0.1:8080)")
-    parser.add_argument("--cookie", help="Cookie (örn: name=value)")
-    parser.add_argument("--header", nargs="+", help="Custom header (örn: X-Custom: value)")
-    parser.add_argument("--status", nargs="+", type=int, help="Filtrelenecek status kodları (örn: 200 403)")
-    parser.add_argument("--tor", action="store_true", help="Tor ağı üzerinden tarama (socks5://127.0.0.1:9050)")
-    parser.add_argument("--no-hash", action="store_true", help="404 hash karşılaştırmasını kapat")
-    
+
+    parser.add_argument("url", help="Target URL (example: https://example.com)")
+    parser.add_argument(
+        "--profile",
+        choices=["quick", "full"],
+        default="quick",
+        help="Built-in wordlist profile",
+    )
+    parser.add_argument("-w", "--wordlist", help="Custom wordlist file path (overrides --profile)")
+    parser.add_argument("-t", "--threads", type=int, default=50, help="Concurrent request count")
+    parser.add_argument("-to", "--timeout", type=int, default=8, help="Request timeout (seconds)")
+    parser.add_argument("-d", "--delay", type=float, default=0, help="Delay between requests")
+    parser.add_argument("-r", "--recursive", action="store_true", help="Enable recursive scanning")
+    parser.add_argument("--max-depth", type=int, default=1, help="Maximum recursive depth")
+    parser.add_argument("-e", "--extensions", nargs="+", help="File extensions (example: .php .bak .sql)")
+    parser.add_argument("-o", "--output", help="Output file path")
+    parser.add_argument("--output-format", choices=["json", "csv", "txt"], help="Output format override")
+    parser.add_argument("--proxy", help="Proxy URL (example: http://127.0.0.1:8080)")
+    parser.add_argument("--cookie", help="Cookie string (example: a=1; b=2)")
+    parser.add_argument("--header", nargs="+", help="Custom header list (example: Authorization: Bearer token)")
+    parser.add_argument("--status", nargs="+", type=int, help="Accepted status codes")
+    parser.add_argument("--tor", action="store_true", help="Use Tor proxy (socks5://127.0.0.1:9050)")
+    parser.add_argument("--retries", type=int, default=1, help="Retry count on timeout/network errors")
+    parser.add_argument("--method", choices=["GET", "HEAD"], default="GET", help="HTTP method")
+    parser.add_argument("--no-hash", action="store_true", help="Disable 404 fingerprint filtering")
+    parser.add_argument("-v", "--verbose", action="store_true", help="Verbose error output")
+
+    return parser
+
+
+def resolve_wordlist_path(profile: str, custom_path: Optional[str]) -> str:
+    if custom_path:
+        return custom_path
+    return WORDLIST_PROFILES[profile]
+
+
+def main() -> None:
+    parser = build_parser()
     args = parser.parse_args()
-    
-    # Cookie parse et
-    cookies = {}
-    if args.cookie:
-        try:
-            name, value = args.cookie.split('=', 1)
-            cookies[name] = value
-        except:
-            pass
-    
-    # Header parse et
-    headers = {}
-    if args.header:
-        for h in args.header:
-            try:
-                name, value = h.split(':', 1)
-                headers[name.strip()] = value.strip()
-            except:
-                pass
-    
-    # Proxy ayarı
-    proxy = args.proxy
-    if args.tor:
-        proxy = "socks5://127.0.0.1:9050"
-    
-    # Wordlist yükle
-    wordlist = load_wordlist(args.wordlist)
-    
-    # Status filter
-    status_filter = args.status if args.status else [200, 301, 302, 403]
-    
-    # Tarama başlat
+
+    try:
+        target = validate_target(args.url)
+        selected_wordlist = resolve_wordlist_path(args.profile, args.wordlist)
+        wordlist = load_wordlist(selected_wordlist)
+    except (ValueError, FileNotFoundError) as exc:
+        print(f"{Fore.RED}[!] {exc}{Style.RESET_ALL}")
+        sys.exit(1)
+
+    proxy = "socks5://127.0.0.1:9050" if args.tor else args.proxy
+
     buster = DobivornDirBuster(
-        target=args.url,
+        target=target,
         wordlist=wordlist,
         threads=args.threads,
         timeout=args.timeout,
         delay=args.delay,
         recursive=args.recursive,
+        max_depth=args.max_depth,
         extensions=args.extensions,
         output=args.output,
+        output_format=args.output_format,
         proxy=proxy,
-        cookies=cookies,
-        headers=headers,
-        status_filter=status_filter,
-        tor=args.tor,
-        no_hash=args.no_hash
+        cookies=parse_cookie(args.cookie),
+        headers=parse_headers(args.header),
+        status_filter=args.status,
+        retries=args.retries,
+        method=args.method,
+        no_hash=args.no_hash,
+        verbose=args.verbose,
     )
-    
+    print(f"{Fore.CYAN}[*] Active wordlist: {selected_wordlist}{Style.RESET_ALL}")
+
     try:
         asyncio.run(buster.scan())
     except KeyboardInterrupt:
-        print(f"\n{Fore.RED}[!] Kullanıcı tarafından durduruldu!{Style.RESET_ALL}")
+        print(f"\n{Fore.RED}[!] Scan interrupted by user.{Style.RESET_ALL}")
         buster.generate_report()
+
 
 if __name__ == "__main__":
     main()
